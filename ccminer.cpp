@@ -1230,7 +1230,7 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		/* build hex string */
 		char *str = NULL;
 
-		if (opt_algo == ALGO_ZR5) {
+		if (opt_algo == ALGO_ZR5 || opt_algo == ALGO_ADAM) {
 			data_size = 80; adata_sz = 20;
 		}
 		else if (opt_algo == ALGO_DECRED) {
@@ -1243,7 +1243,7 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 			return sia_submit(curl, pool, work);
 		}
 
-		if (opt_algo != ALGO_HEAVY && opt_algo != ALGO_MJOLLNIR) {
+		if (opt_algo != ALGO_HEAVY && opt_algo != ALGO_MJOLLNIR && opt_algo != ALGO_ADAM) {
 			for (int i = 0; i < adata_sz; i++)
 				le32enc(work->data + i, work->data[i]);
 		}
@@ -1254,21 +1254,41 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		}
 
 		/* build JSON-RPC request */
-		sprintf(s,
-			"{\"method\": \"getwork\", \"params\": [\"%s\"], \"id\":10}\r\n",
-			str);
+		if (opt_algo == ALGO_ADAM) {
+			sprintf(s,
+				"{\"method\": \"submitblock\", \"params\": [\"%s\"], \"id\":4}\r\n",
+				str);
+		} else {
+			sprintf(s,
+				"{\"method\": \"getwork\", \"params\": [\"%s\"], \"id\":10}\r\n",
+				str);
+		}
 
 		/* issue JSON-RPC request */
 		val = json_rpc_call_pool(curl, pool, s, false, false, NULL);
 		if (unlikely(!val)) {
 			applog(LOG_ERR, "submit_upstream_work json_rpc_call failed");
+			if (opt_algo == ALGO_ADAM) {
+				free(str);
+				g_work_time = 0;
+				restart_threads();
+				return true;
+			}
+			free(str);
 			return false;
 		}
 
 		res = json_object_get(val, "result");
 		reason = json_object_get(val, "reject-reason");
-		if (!share_result(json_is_true(res), work->pooln, work->sharediff[0],
-				reason ? json_string_value(reason) : NULL))
+		bool share_ok = json_is_true(res);
+		const char *rej_str = reason ? json_string_value(reason) : NULL;
+		if (opt_algo == ALGO_ADAM) {
+			const char *res_str = json_string_value(res);
+			share_ok = json_is_null(res) || (res_str && strcmp(res_str, "valid") == 0) || json_is_true(res);
+			if (!share_ok && res_str)
+				rej_str = res_str;
+		}
+		if (!share_result(share_ok, work->pooln, work->sharediff[0], rej_str))
 		{
 			if (check_dups)
 				hashlog_purge_job(work->job_id);
