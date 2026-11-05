@@ -2515,6 +2515,9 @@ static void *miner_thread(void *userdata)
 			case ALGO_SCRYPT_JANE:
 				minmax = 0x1000;
 				break;
+			case ALGO_ADAM:
+				minmax = 0x8000;
+				break;
 			}
 			max64 = max(minmax-1, max64);
 		}

@@ -163,14 +163,9 @@ extern "C" int scanhash_adam(int thr_id, struct work* work, uint32_t max_nonce, 
     uint32_t *ptarget = work->target;
     const uint32_t first_nonce = pdata[19];
 
-    uint32_t throughput = std::min<uint32_t>(32768U, max_nonce > first_nonce ? (max_nonce - first_nonce) : 0U);
-    if (throughput == 0) {
-        return 0;
-    }
-
     // ADAM consensus hashes a 70-byte input (66B prefix + 4B nonce) and 32-byte truncated
     // intermediate hashes with 256-bit scalar multiplication. Use the consensus-exact
-    // OpenMP 70->32->32 pipeline in bounded batches with work_restart checks.
+    // OpenMP 70->32->32 pipeline in bounded batches with work_restart and 5s scan checks.
     uint8_t input_template[70];
     uint32_t le_data[20];
     for (int k = 0; k < 20; k++) {
@@ -178,15 +173,38 @@ extern "C" int scanhash_adam(int thr_id, struct work* work, uint32_t max_nonce, 
     }
     memcpy(input_template, le_data, 66);
 
-    uint32_t found_nonce = UINT32_MAX;
-    uint32_t scanned = run_cpu_fallback_mine(thr_id, input_template, first_nonce, throughput, ptarget, &found_nonce);
+    const time_t scan_start = time(NULL);
+    const int max_scan_sec = 5;
 
-    *hashes_done += scanned;
-    pdata[19] = first_nonce + scanned;
+    do {
+        uint32_t throughput = std::min<uint32_t>(8192U, max_nonce > pdata[19] ? (max_nonce - pdata[19]) : 0U);
+        if (throughput == 0) {
+            break;
+        }
 
-    if (found_nonce != UINT32_MAX) {
-        work->nonces[0] = found_nonce;
-        return 1;
-    }
+        uint32_t found_nonce = UINT32_MAX;
+        uint32_t scanned = run_cpu_fallback_mine(thr_id, input_template, pdata[19], throughput, ptarget, &found_nonce);
+
+        *hashes_done = pdata[19] - first_nonce + scanned;
+
+        if (found_nonce != UINT32_MAX) {
+            work->nonces[0] = found_nonce;
+            work->valid_nonces = 1;
+            pdata[19] = found_nonce + 1;
+            return 1;
+        }
+
+        if ((uint64_t)pdata[19] + scanned >= max_nonce) {
+            pdata[19] = max_nonce;
+            break;
+        }
+        pdata[19] += scanned;
+
+        if ((time(NULL) - scan_start) >= max_scan_sec) {
+            break;
+        }
+    } while (!work_restart[thr_id].restart);
+
+    *hashes_done = pdata[19] - first_nonce;
     return 0;
 }
