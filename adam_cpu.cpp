@@ -326,10 +326,12 @@ static void cpu_scale_hash(uint32_t *hash, int i_factor) {
     }
 }
 
-extern "C" void run_cpu_fallback_mine(const uint8_t *input_template, uint32_t start_nonce, uint32_t throughput, const uint32_t *target, uint32_t *found_nonce) {
-    #pragma omp parallel for
+extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const uint8_t *input_template, uint32_t start_nonce, uint32_t throughput, const uint32_t *target, uint32_t *found_nonce) {
+    uint32_t scanned = 0;
+    #pragma omp parallel for reduction(+:scanned)
     for (uint32_t i = 0; i < throughput; i++) {
-        if (*found_nonce != 0) continue;
+        if (*found_nonce != UINT32_MAX || work_restart[thr_id].restart) continue;
+        scanned++;
 
         uint32_t nonce = start_nonce + i;
         uint8_t input[70];
@@ -354,10 +356,11 @@ extern "C" void run_cpu_fallback_mine(const uint8_t *input_template, uint32_t st
         if (fulltest(puzzleHash, target)) {
             #pragma omp critical
             {
-                if (*found_nonce == 0 || nonce < *found_nonce) {
+                if (*found_nonce == UINT32_MAX || nonce < *found_nonce) {
                     *found_nonce = nonce;
                 }
             }
         }
     }
+    return scanned;
 }

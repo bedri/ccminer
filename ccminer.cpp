@@ -789,6 +789,15 @@ static bool work_decode(const json_t *val, struct work *work)
                         ((uint8_t*)work->target)[i] = ((uint8_t*)work->target)[31 - i];
                         ((uint8_t*)work->target)[31 - i] = tmp;
                 }
+                json_t *h_obj = json_object_get(val, "height");
+                if (h_obj && json_is_integer(h_obj)) {
+                        work->height = (uint32_t)json_integer_value(h_obj);
+                        if (!opt_quiet && work->height > g_work.height) {
+                                applog(LOG_BLUE, "%s %s block %d", short_url,
+                                        algo_names[opt_algo], work->height);
+                                g_work.height = work->height;
+                        }
+                }
                 json_t *v_obj = json_object_get(val, "version");
                 int version = v_obj ? (int)json_integer_value(v_obj) : 11;
                 json_t *p_obj = json_object_get(val, "powalgo");
@@ -1350,17 +1359,19 @@ static const char *gbt_req =
 static bool get_blocktemplate(CURL *curl, struct work *work)
 {
 	struct pool_infos *pool = &pools[work->pooln];
-	if (!allow_gbt)
+	if (!allow_gbt || opt_algo == ALGO_ADAM || work->height > 0)
 		return false;
 
 	int curl_err = 0;
 	json_t *val = json_rpc_call_pool(curl, pool, gbt_req, false, false, &curl_err);
 
-	if (!val && curl_err == -1) {
-		// when getblocktemplate is not supported, disable it
-		allow_gbt = false;
-		if (!opt_quiet) {
-				applog(LOG_BLUE, "gbt not supported, block height notices disabled");
+	if (!val) {
+		if (curl_err == -1) {
+			// when getblocktemplate is not supported, disable it
+			allow_gbt = false;
+			if (!opt_quiet) {
+					applog(LOG_BLUE, "gbt not supported, block height notices disabled");
+			}
 		}
 		return false;
 	}
@@ -1386,10 +1397,12 @@ static bool get_mininginfo(CURL *curl, struct work *work)
 
 	json_t *val = json_rpc_call_pool(curl, pool, info_req, false, false, &curl_err);
 
-	if (!val && curl_err == -1) {
-		allow_mininginfo = false;
-		if (opt_debug) {
-				applog(LOG_DEBUG, "getmininginfo not supported");
+	if (!val) {
+		if (curl_err == -1) {
+			allow_mininginfo = false;
+			if (opt_debug) {
+					applog(LOG_DEBUG, "getmininginfo not supported");
+			}
 		}
 		return false;
 	} else {
