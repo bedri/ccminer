@@ -1415,6 +1415,7 @@ static bool get_upstream_work(CURL *curl, struct work *work)
 	const char *rpc_req = json_rpc_getwork;
 	json_t *val;
 
+adam_retry:
 	gettimeofday(&tv_start, NULL);
 
 	if (opt_algo == ALGO_SIA) {
@@ -1450,7 +1451,20 @@ static bool get_upstream_work(CURL *curl, struct work *work)
 	if (!val)
 		return false;
 
-	rc = work_decode(json_object_get(val, "result"), work);
+	json_t *res_obj = json_object_get(val, "result");
+	if (opt_algo == ALGO_ADAM && res_obj && json_is_object(res_obj) && !json_object_get(res_obj, "puzzleheader")) {
+		static uint32_t last_log_time = 0;
+		uint32_t now = (uint32_t)time(NULL);
+		if (now - last_log_time >= 30) {
+			applog(LOG_BLUE, "ADAM miner: Waiting for election (our miner is not elected for the current block)");
+			last_log_time = now;
+		}
+		json_decref(val);
+		sleep(2);
+		goto adam_retry;
+	}
+
+	rc = work_decode(res_obj, work);
 
 	if (opt_protocol && rc) {
 		timeval_subtract(&diff, &tv_end, &tv_start);
