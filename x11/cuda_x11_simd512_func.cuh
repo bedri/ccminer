@@ -1158,7 +1158,7 @@ __device__ __forceinline__ void Round8_3_final(uint32_t *A, int r, int s, int t,
 	STEP8_MAJ_31(d_cw3[7], u, r, &A[8], &A[16], &A[24], A);
 }
 
-#if __CUDA_ARCH__ < 350
+#if 0
 #define expanded_vector(x) tex1Dfetch(texRef1D_128, (x))
 #else
 //#define expanded_vector(x) tex1Dfetch(texRef1D_128, (x))

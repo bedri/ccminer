@@ -1,4 +1,4 @@
-﻿#include <stdio.h>
+#include <stdio.h>
 #include <memory.h>
 #include <string.h>
 #include <unistd.h>
@@ -19,6 +19,14 @@
 
 #include "cuda_runtime.h"
 
+#if CUDART_VERSION >= 12000
+#define GetDeviceClock(props) (0)
+#define GetDeviceMemClock(props) (0)
+#else
+#define GetDeviceClock(props) ((props).clockRate)
+#define GetDeviceMemClock(props) ((props).memoryClockRate)
+#endif
+
 #ifdef __cplusplus
 /* miner.h functions are declared in C type, not C++ */
 extern "C" {
@@ -35,9 +43,9 @@ int cuda_num_devices()
 	}
 
 	if (version < CUDART_VERSION) {
-		applog(LOG_ERR, "Your system does not support CUDA %d.%d API!",
+		applog(LOG_WARNING, "Your system driver reports CUDA %d.%d, runtime is %d.%d. Proceeding anyway...",
+			version / 1000, (version % 1000) / 10,
 			CUDART_VERSION / 1000, (CUDART_VERSION % 1000) / 10);
-		exit(1);
 	}
 
 	err = cudaGetDeviceCount(&GPU_N);
@@ -104,8 +112,8 @@ void cuda_print_devices()
 		if (!opt_n_threads || n < opt_n_threads) {
 			fprintf(stderr, "GPU #%d: SM %d.%d %s @ %.0f MHz (MEM %.0f)\n", dev_id,
 				props.major, props.minor, device_name[dev_id],
-				(double) props.clockRate/1000,
-				(double) props.memoryClockRate/1000);
+				(double) GetDeviceClock(props)/1000,
+				(double) GetDeviceMemClock(props)/1000);
 #ifdef USE_WRAPNVML
 			if (opt_debug) nvml_print_device_info(dev_id);
 #ifdef WIN32
@@ -255,8 +263,8 @@ int cuda_gpu_info(struct cgpu_info *gpu)
 {
 	cudaDeviceProp props;
 	if (cudaGetDeviceProperties(&props, gpu->gpu_id) == cudaSuccess) {
-		gpu->gpu_clock = (uint32_t) props.clockRate;
-		gpu->gpu_memclock = (uint32_t) props.memoryClockRate;
+		gpu->gpu_clock = (uint32_t) GetDeviceClock(props);
+		gpu->gpu_memclock = (uint32_t) GetDeviceMemClock(props);
 		gpu->gpu_mem = (uint64_t) (props.totalGlobalMem / 1024); // kB
 #if defined(_WIN32) && defined(USE_WRAPNVML)
 		// required to get mem size > 4GB (size_t too small for bytes on 32bit)

@@ -586,8 +586,13 @@ static json_t *json_rpc_call(CURL *curl, const char *url,
 		else
 			s = strdup("(unknown reason)");
 
-		if (!curl_err || opt_debug)
-			applog(LOG_ERR, "JSON-RPC call failed: %s", s);
+		if (!curl_err || opt_debug) {
+			if (s && strcmp(s, "Out of memory") == 0) {
+				applog(LOG_ERR, "JSON-RPC call failed: Node is waiting for Quorum sync, please wait...");
+			} else {
+				applog(LOG_ERR, "JSON-RPC call failed: %s", s);
+			}
+		}
 
 		free(s);
 
