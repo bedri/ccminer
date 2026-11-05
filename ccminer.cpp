@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright 2010 Jeff Garzik
  * Copyright 2012-2014 pooler
  * Copyright 2014-2017 tpruvot
@@ -701,8 +701,109 @@ static void calc_network_diff(struct work *work)
 }
 
 /* decode data from getwork (wallets and longpoll pools) */
+
+// ADAM consensus variables
+int adam_version = 11;
+int adam_algo_single = -1;
+int adam_algo1 = -1;
+int adam_algo2 = -1;
+int adam_algo3 = -1;
+int adam_factor = 1;
+
+static int get_adam_algo_index(const char *name) {
+    if (strcmp(name, "blake") == 0) return 0;
+    if (strcmp(name, "bmw") == 0) return 1;
+    if (strcmp(name, "groestl") == 0) return 2;
+    if (strcmp(name, "jh") == 0) return 3;
+    if (strcmp(name, "keccak") == 0) return 4;
+    if (strcmp(name, "skein") == 0) return 5;
+    if (strcmp(name, "luffa") == 0) return 6;
+    if (strcmp(name, "cubehash") == 0) return 7;
+    if (strcmp(name, "shavite") == 0) return 8;
+    if (strcmp(name, "simd") == 0) return 9;
+    if (strcmp(name, "echo") == 0) return 10;
+    if (strcmp(name, "X11KVS") == 0) return 11;
+    if (strcmp(name, "DoubleSHA256") == 0) return 12;
+    if (strcmp(name, "hamsi") == 0) return 13;
+    if (strcmp(name, "fugue") == 0) return 14;
+    if (strcmp(name, "shabal") == 0) return 15;
+    if (strcmp(name, "whirlpool") == 0) return 16;
+    if (strcmp(name, "haval") == 0 || strcmp(name, "haval256_5") == 0) return 17;
+    return -1;
+}
+
+void parse_adam_powalgo(int version, const char *powalgo) {
+    adam_version = version;
+    if (version == 11) {
+        adam_algo_single = get_adam_algo_index(powalgo);
+    } else {
+        char buf[128];
+        strncpy(buf, powalgo, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = 0;
+        
+        char *p1 = strtok(buf, "+");
+        char *p2 = p1 ? strtok(NULL, "+") : NULL;
+        char *p3 = p2 ? strtok(NULL, "+") : NULL;
+        char *p4 = p3 ? strtok(NULL, "+") : NULL;
+        
+        if (p1) adam_algo1 = get_adam_algo_index(p1);
+        if (p2) adam_algo2 = get_adam_algo_index(p2);
+        if (p3) adam_algo3 = get_adam_algo_index(p3);
+        if (p4) {
+            int minerIdx = atoi(p4);
+            adam_factor = minerIdx + 1;
+        } else {
+            adam_factor = 1;
+        }
+    }
+}
+
 static bool work_decode(const json_t *val, struct work *work)
 {
+        if (opt_algo == ALGO_ADAM) {
+                char *s = json_dumps(val, 0);
+                if (s) {
+                        applog(LOG_BLUE, "ADAM Debug Response: %s", s);
+                        free(s);
+                }
+                if (!json_object_get(val, "puzzleheader")) {
+                        static uint32_t last_log_time = 0;
+                        uint32_t now = (uint32_t)time(NULL);
+                        if (now - last_log_time >= 30) {
+                                applog(LOG_BLUE, "ADAM miner: Waiting for election (our miner is not elected for the current block)");
+                                last_log_time = now;
+                        }
+                        return false;
+                }
+                if (!jobj_binary(val, "puzzleheader", work->data, 80)) {
+                        applog(LOG_ERR, "JSON invalid puzzleheader");
+                        return false;
+                }
+                if (!jobj_binary(val, "target", work->target, 32)) {
+                        applog(LOG_ERR, "JSON invalid target");
+                        return false;
+                }
+                // Reverse target bytes to change from big-endian hex to standard little-endian word layout
+                for (int i = 0; i < 16; i++) {
+                        uint8_t tmp = ((uint8_t*)work->target)[i];
+                        ((uint8_t*)work->target)[i] = ((uint8_t*)work->target)[31 - i];
+                        ((uint8_t*)work->target)[31 - i] = tmp;
+                }
+                json_t *v_obj = json_object_get(val, "version");
+                int version = v_obj ? (int)json_integer_value(v_obj) : 11;
+                json_t *p_obj = json_object_get(val, "powalgo");
+                const char *powalgo = p_obj ? json_string_value(p_obj) : "blake";
+                parse_adam_powalgo(version, powalgo);
+                for (int i = 0; i < 20; i++)
+                        work->data[i] = le32dec(work->data + i);
+                for (int i = 0; i < 8; i++)
+                        work->target[i] = le32dec(work->target + i);
+                work->targetdiff = target_to_diff(work->target);
+                stratum_diff = work->targetdiff;
+                work->tx_count = use_pok = 0;
+                return true;
+        }
+
 	int data_size, target_size = sizeof(work->target);
 	int adata_sz, atarget_sz = ARRAY_SIZE(work->target);
 	int i;
@@ -899,6 +1000,50 @@ int share_result(int result, int pooln, double sharediff, const char *reason)
 
 static bool submit_upstream_work(CURL *curl, struct work *work)
 {
+        if (opt_algo == ALGO_ADAM) {
+                int idnonce = work->submit_nonce_id;
+                work->data[19] = work->nonces[idnonce];
+                for (int i = 0; i < 20; i++)
+                        le32enc(work->data + i, work->data[i]);
+                char *str = bin2hex((uchar*)work->data, 80);
+                if (unlikely(!str)) {
+                        applog(LOG_ERR, "submit_upstream_work OOM");
+                        return false;
+                }
+                char s[512];
+                sprintf(s, "{\"method\": \"submitblock\", \"params\": [\"%s\"], \"id\": 10}\r\n", str);
+                int curl_err = 0;
+                json_t *val = json_rpc_call_pool(curl, &pools[work->pooln], s, false, false, &curl_err);
+                if (unlikely(!val)) {
+                        free(str);
+                        if (curl_err != 0) {
+                                applog(LOG_ERR, "submit_upstream_work json_rpc_call failed (network error: %d)", curl_err);
+                                return false;
+                        } else {
+                                applog(LOG_ERR, "submitblock rejected by node (validation error)");
+                                return true;
+                        }
+                }
+                json_t *res = json_object_get(val, "result");
+                json_t *reason = json_object_get(val, "reject-reason");
+                bool ok = (res && json_is_null(res));
+                if (!ok && res && json_is_string(res)) {
+                        const char *res_str = json_string_value(res);
+                        if (strcmp(res_str, "valid") == 0) {
+                                ok = true;
+                        }
+                }
+                if (!share_result(ok, work->pooln, work->sharediff[0],
+                                reason ? json_string_value(reason) : (ok ? NULL : "rejected")))
+                {
+                        if (check_dups)
+                                hashlog_purge_job(work->job_id);
+                }
+                json_decref(val);
+                free(str);
+                return true;
+        }
+
 	char s[512];
 	struct pool_infos *pool = &pools[work->pooln];
 	json_t *val, *res, *reason;
@@ -1290,6 +1435,9 @@ static bool get_upstream_work(CURL *curl, struct work *work)
 			__func__, want_longpoll, have_longpoll);
 
 	/* want_longpoll/have_longpoll required here to init/unlock the lp thread */
+        if (opt_algo == ALGO_ADAM) {
+                rpc_req = "{\"method\": \"getblocktemplate\", \"params\": [{}], \"id\": 0}\r\n";
+        }
 	val = json_rpc_call_pool(curl, pool, rpc_req, want_longpoll, have_longpoll, NULL);
 	gettimeofday(&tv_end, NULL);
 
@@ -2371,6 +2519,9 @@ static void *miner_thread(void *userdata)
 		/* scan nonces for a proof-of-work hash */
 		switch (opt_algo) {
 
+		case ALGO_ADAM:
+			rc = scanhash_adam(thr_id, &work, max_nonce, &hashes_done);
+			break;
 		case ALGO_ALLIUM:
 			rc = scanhash_allium(thr_id, &work, max_nonce, &hashes_done);
 			break;
@@ -3967,6 +4118,8 @@ BOOL WINAPI ConsoleHandler(DWORD dwType)
 
 int main(int argc, char *argv[])
 {
+	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
 	struct thr_info *thr;
 	long flags;
 	int i;
