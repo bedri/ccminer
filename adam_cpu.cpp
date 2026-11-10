@@ -27,14 +27,6 @@ extern "C" {
 #include "sph/sph_haval.h"
 }
 
-// External declarations of global variables set by ccminer.cpp
-extern int adam_version;
-extern int adam_algo_single;
-extern int adam_algo1;
-extern int adam_algo2;
-extern int adam_algo3;
-extern int adam_factor;
-
 static const unsigned int HASHX11KV_MIN_NUMBER_ITERATIONS = 2;
 static const unsigned int HASHX11KV_MAX_NUMBER_ITERATIONS = 6;
 static const unsigned int HASHX11KV_NUMBER_ALGOS = 11;
@@ -326,7 +318,14 @@ static void cpu_scale_hash(uint32_t *hash, int i_factor) {
     }
 }
 
-extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const uint8_t *input_template, uint32_t start_nonce, uint32_t throughput, const uint32_t *target, uint32_t *found_nonce) {
+extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const struct work *work, const uint8_t *input_template, uint32_t start_nonce, uint32_t throughput, const uint32_t *target, uint32_t *found_nonce) {
+    const int w_version = work->adam_version ? work->adam_version : 11;
+    const int w_algo_single = work->adam_algo_single;
+    const int w_algo1 = work->adam_algo1;
+    const int w_algo2 = work->adam_algo2;
+    const int w_algo3 = work->adam_algo3;
+    const int w_factor = work->adam_factor > 0 ? work->adam_factor : 1;
+
     uint32_t scanned = 0;
     #pragma omp parallel for reduction(+:scanned)
     for (uint32_t i = 0; i < throughput; i++) {
@@ -339,18 +338,18 @@ extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const uint8_t *input_templ
         le32enc(input + 66, nonce);
 
         uint32_t puzzleHash[8];
-        if (adam_version == 12) {
+        if (w_version == 12) {
             uint32_t hash3[8];
-            cpu_adam_puzzle_hash(adam_algo3, input, 70, hash3);
-            cpu_scale_hash(hash3, adam_factor);
+            cpu_adam_puzzle_hash(w_algo3, input, 70, hash3);
+            cpu_scale_hash(hash3, w_factor);
             
             uint32_t hash2[8];
-            cpu_adam_puzzle_hash(adam_algo2, (uint8_t*)hash3, 32, hash2);
-            cpu_scale_hash(hash2, adam_factor);
+            cpu_adam_puzzle_hash(w_algo2, (uint8_t*)hash3, 32, hash2);
+            cpu_scale_hash(hash2, w_factor);
 
-            cpu_adam_puzzle_hash(adam_algo1, (uint8_t*)hash2, 32, puzzleHash);
+            cpu_adam_puzzle_hash(w_algo1, (uint8_t*)hash2, 32, puzzleHash);
         } else {
-            cpu_adam_puzzle_hash(adam_algo_single, input, 70, puzzleHash);
+            cpu_adam_puzzle_hash(w_algo_single, input, 70, puzzleHash);
         }
 
         if (fulltest(puzzleHash, target)) {

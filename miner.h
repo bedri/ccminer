@@ -757,6 +757,14 @@ struct work {
 	uint32_t scanned_from;
 	uint32_t scanned_to;
 
+	/* ADAM per-work puzzle configuration */
+	int adam_version;
+	int adam_algo_single;
+	int adam_algo1;
+	int adam_algo2;
+	int adam_algo3;
+	int adam_factor;
+
 	/* pok getwork txs */
 	uint32_t tx_count;
 	struct tx txs[POK_MAX_TXS];

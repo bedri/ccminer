@@ -7,14 +7,6 @@
 #include "cuda_helper.h"
 #include "x11/cuda_x11.h"
 
-// External declarations of global variables set by ccminer.cpp
-extern int adam_version;
-extern int adam_algo_single;
-extern int adam_algo1;
-extern int adam_algo2;
-extern int adam_algo3;
-extern int adam_factor;
-
 // Thread-local GPU hash pointer array
 static uint32_t *d_hash[MAX_GPUS] = { 0 };
 
@@ -91,7 +83,7 @@ extern void x17_haval256_cpu_init(int thr_id, uint32_t threads);
 extern void x17_haval256_cpu_hash_64(int thr_id, uint32_t threads, uint32_t startNounce, uint32_t *d_hash, const int outlen);
 
 // CPU fallback and puzzle hash functions
-extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const uint8_t *input_template, uint32_t start_nonce, uint32_t throughput, const uint32_t *target, uint32_t *found_nonce);
+extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const struct work *work, const uint8_t *input_template, uint32_t start_nonce, uint32_t throughput, const uint32_t *target, uint32_t *found_nonce);
 extern "C" void cpu_adam_puzzle_hash(int algoIndex, const uint8_t* pbegin, size_t len, void* pBuffer);
 
 // Helper for CPU scaling
@@ -183,7 +175,7 @@ extern "C" int scanhash_adam(int thr_id, struct work* work, uint32_t max_nonce, 
         }
 
         uint32_t found_nonce = UINT32_MAX;
-        uint32_t scanned = run_cpu_fallback_mine(thr_id, input_template, pdata[19], throughput, ptarget, &found_nonce);
+        uint32_t scanned = run_cpu_fallback_mine(thr_id, work, input_template, pdata[19], throughput, ptarget, &found_nonce);
 
         *hashes_done = pdata[19] - first_nonce + scanned;
 

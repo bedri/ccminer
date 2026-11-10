@@ -232,6 +232,7 @@ char *opt_api_mcast_des = strdup("");
 int opt_api_mcast_port = 4068;
 
 bool opt_stratum_stats = false;
+static char *opt_coinbase_addr = NULL;
 
 int cryptonight_fork = 1;
 
@@ -378,6 +379,7 @@ Options:\n\
       --syslog-prefix=... allow to change syslog tool name\n"
 #endif
 "\
+      --coinbase-addr=A specify miner/operator address for solo/ADAM getblocktemplate\n\
       --hide-diff       hide submitted block and net difficulty (old mode)\n\
   -B, --background      run the miner in the background\n\
       --benchmark       run in offline benchmark mode\n\
@@ -407,6 +409,7 @@ struct option options[] = {
 	{ "background", 0, NULL, 'B' },
 	{ "benchmark", 0, NULL, 1005 },
 	{ "cert", 1, NULL, 1001 },
+	{ "coinbase-addr", 1, NULL, 1085 },
 	{ "config", 1, NULL, 'c' },
 	{ "cputest", 0, NULL, 1006 },
 	{ "cpu-affinity", 1, NULL, 1020 },
@@ -702,14 +705,6 @@ static void calc_network_diff(struct work *work)
 
 /* decode data from getwork (wallets and longpoll pools) */
 
-// ADAM consensus variables
-int adam_version = 11;
-int adam_algo_single = -1;
-int adam_algo1 = -1;
-int adam_algo2 = -1;
-int adam_algo3 = -1;
-int adam_factor = 1;
-
 static int get_adam_algo_index(const char *name) {
     if (strcmp(name, "blake") == 0) return 0;
     if (strcmp(name, "bmw") == 0) return 1;
@@ -732,28 +727,36 @@ static int get_adam_algo_index(const char *name) {
     return -1;
 }
 
-void parse_adam_powalgo(int version, const char *powalgo) {
-    adam_version = version;
+static void parse_adam_powalgo(struct work *work, int version, const char *powalgo) {
+    work->adam_version = version;
+    work->adam_algo_single = -1;
+    work->adam_algo1 = -1;
+    work->adam_algo2 = -1;
+    work->adam_algo3 = -1;
+    work->adam_factor = 1;
+    if (!powalgo)
+        return;
     if (version == 11) {
-        adam_algo_single = get_adam_algo_index(powalgo);
+        work->adam_algo_single = get_adam_algo_index(powalgo);
     } else {
         char buf[128];
         strncpy(buf, powalgo, sizeof(buf) - 1);
         buf[sizeof(buf) - 1] = 0;
-        
-        char *p1 = strtok(buf, "+");
-        char *p2 = p1 ? strtok(NULL, "+") : NULL;
-        char *p3 = p2 ? strtok(NULL, "+") : NULL;
-        char *p4 = p3 ? strtok(NULL, "+") : NULL;
-        
-        if (p1) adam_algo1 = get_adam_algo_index(p1);
-        if (p2) adam_algo2 = get_adam_algo_index(p2);
-        if (p3) adam_algo3 = get_adam_algo_index(p3);
+
+        char *saveptr = NULL;
+        char *p1 = strtok_r(buf, "+", &saveptr);
+        char *p2 = p1 ? strtok_r(NULL, "+", &saveptr) : NULL;
+        char *p3 = p2 ? strtok_r(NULL, "+", &saveptr) : NULL;
+        char *p4 = p3 ? strtok_r(NULL, "+", &saveptr) : NULL;
+
+        if (p1) work->adam_algo1 = get_adam_algo_index(p1);
+        if (p2) work->adam_algo2 = get_adam_algo_index(p2);
+        if (p3) work->adam_algo3 = get_adam_algo_index(p3);
         if (p4) {
             int minerIdx = atoi(p4);
-            adam_factor = minerIdx + 1;
+            work->adam_factor = (minerIdx >= 0) ? (minerIdx + 1) : 1;
         } else {
-            adam_factor = 1;
+            work->adam_factor = 1;
         }
     }
 }
@@ -761,10 +764,12 @@ void parse_adam_powalgo(int version, const char *powalgo) {
 static bool work_decode(const json_t *val, struct work *work)
 {
         if (opt_algo == ALGO_ADAM) {
-                char *s = json_dumps(val, 0);
-                if (s) {
-                        applog(LOG_BLUE, "ADAM Debug Response: %s", s);
-                        free(s);
+                if (opt_debug) {
+                        char *s = json_dumps(val, 0);
+                        if (s) {
+                                applog(LOG_DEBUG, "ADAM Debug Response: %s", s);
+                                free(s);
+                        }
                 }
                 if (!json_object_get(val, "puzzleheader")) {
                         static uint32_t last_log_time = 0;
@@ -791,18 +796,19 @@ static bool work_decode(const json_t *val, struct work *work)
                 }
                 json_t *h_obj = json_object_get(val, "height");
                 if (h_obj && json_is_integer(h_obj)) {
+                        static uint32_t last_logged_height = 0;
                         work->height = (uint32_t)json_integer_value(h_obj);
-                        if (!opt_quiet && work->height > g_work.height) {
+                        if (!opt_quiet && work->height > last_logged_height) {
                                 applog(LOG_BLUE, "%s %s block %d", short_url,
                                         algo_names[opt_algo], work->height);
-                                g_work.height = work->height;
+                                last_logged_height = work->height;
                         }
                 }
                 json_t *v_obj = json_object_get(val, "version");
                 int version = v_obj ? (int)json_integer_value(v_obj) : 11;
                 json_t *p_obj = json_object_get(val, "powalgo");
                 const char *powalgo = p_obj ? json_string_value(p_obj) : "blake";
-                parse_adam_powalgo(version, powalgo);
+                parse_adam_powalgo(work, version, powalgo);
                 for (int i = 0; i < 20; i++)
                         work->data[i] = le32dec(work->data + i);
                 for (int i = 0; i < 8; i++)
@@ -1469,8 +1475,16 @@ adam_retry:
 			__func__, want_longpoll, have_longpoll);
 
 	/* want_longpoll/have_longpoll required here to init/unlock the lp thread */
+        char adam_gbt_req[256];
         if (opt_algo == ALGO_ADAM) {
-                rpc_req = "{\"method\": \"getblocktemplate\", \"params\": [{}], \"id\": 0}\r\n";
+                if (opt_coinbase_addr && opt_coinbase_addr[0] != '\0') {
+                        snprintf(adam_gbt_req, sizeof(adam_gbt_req),
+                                "{\"method\": \"getblocktemplate\", \"params\": [{\"mineraddress\": \"%s\"}], \"id\": 0}\r\n",
+                                opt_coinbase_addr);
+                        rpc_req = adam_gbt_req;
+                } else {
+                        rpc_req = "{\"method\": \"getblocktemplate\", \"params\": [{}], \"id\": 0}\r\n";
+                }
         }
 	val = json_rpc_call_pool(curl, pool, rpc_req, want_longpoll, have_longpoll, NULL);
 	gettimeofday(&tv_end, NULL);
@@ -2233,7 +2247,13 @@ static void *miner_thread(void *userdata)
 			}
 		}
 
-		else if (memcmp(&work.data[wcmpoft], &g_work.data[wcmpoft], wcmplen)) {
+		else if (memcmp(&work.data[wcmpoft], &g_work.data[wcmpoft], wcmplen) ||
+		         (opt_algo == ALGO_ADAM && (work.adam_version != g_work.adam_version ||
+		                                    work.adam_algo_single != g_work.adam_algo_single ||
+		                                    work.adam_algo1 != g_work.adam_algo1 ||
+		                                    work.adam_algo2 != g_work.adam_algo2 ||
+		                                    work.adam_algo3 != g_work.adam_algo3 ||
+		                                    work.adam_factor != g_work.adam_factor))) {
 			#if 0
 			if (opt_debug) {
 				for (int n=0; n <= (wcmplen-8); n+=8) {
@@ -3975,6 +3995,21 @@ void parse_arg(int key, char *arg)
 		if (d <= 0.)
 			show_usage_and_exit(1);
 		opt_difficulty = 1.0/d;
+		break;
+	case 1085: // --coinbase-addr
+		free(opt_coinbase_addr);
+		opt_coinbase_addr = NULL;
+		if (arg && arg[0] != '\0') {
+			size_t alen = strlen(arg);
+			if (alen >= 128)
+				show_usage_and_exit(1);
+			for (size_t k = 0; k < alen; k++) {
+				unsigned char c = (unsigned char)arg[k];
+				if (c <= 0x20 || c == '"' || c == '\\')
+					show_usage_and_exit(1);
+			}
+			opt_coinbase_addr = strdup(arg);
+		}
 		break;
 
 	/* PER POOL CONFIG OPTIONS */
