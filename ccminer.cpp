@@ -850,7 +850,11 @@ static void adam_memrev(unsigned char *p, size_t len)
 static void *register_miner_thread_func(void *arg)
 {
 	(void)arg;
+#ifdef WIN32
+	unsigned int jitter = (unsigned int)GetCurrentProcessId();
+#else
 	unsigned int jitter = (unsigned int)getpid();
+#endif
 	if (opt_coinbase_addr) {
 		for (const char *p = opt_coinbase_addr; *p; ++p)
 			jitter = (jitter * 16777619u) ^ (unsigned char)(*p);
@@ -1164,10 +1168,17 @@ static bool parse_adam_powalgo(struct work *work, int version, const char *powal
         buf[sizeof(buf) - 1] = 0;
 
         char *saveptr = NULL;
+#ifdef _WIN32
+        char *p1 = strtok_s(buf, "+", &saveptr);
+        char *p2 = p1 ? strtok_s(NULL, "+", &saveptr) : NULL;
+        char *p3 = p2 ? strtok_s(NULL, "+", &saveptr) : NULL;
+        char *p4 = p3 ? strtok_s(NULL, "+", &saveptr) : NULL;
+#else
         char *p1 = strtok_r(buf, "+", &saveptr);
         char *p2 = p1 ? strtok_r(NULL, "+", &saveptr) : NULL;
         char *p3 = p2 ? strtok_r(NULL, "+", &saveptr) : NULL;
         char *p4 = p3 ? strtok_r(NULL, "+", &saveptr) : NULL;
+#endif
 
         if (!p1 || !p2 || !p3)
             return false;
@@ -4091,13 +4102,17 @@ pool_switched:
 static void show_version_and_exit(void)
 {
 	printf("%s v%s\n"
-#ifdef WIN32
-		"pthreads static %s\n"
+#if defined(WIN32) && defined(PTW32_VERSION_STRING)
+		"pthreads %s\n"
+#elif defined(WIN32) && defined(__PTW32_VERSION_STRING)
+		"pthreads %s\n"
 #endif
 		"%s\n",
 		PACKAGE_NAME, PACKAGE_VERSION,
-#ifdef WIN32
+#if defined(WIN32) && defined(PTW32_VERSION_STRING)
 		PTW32_VERSION_STRING,
+#elif defined(WIN32) && defined(__PTW32_VERSION_STRING)
+		__PTW32_VERSION_STRING,
 #endif
 		curl_version());
 	proper_exit(EXIT_CODE_OK);
@@ -5014,6 +5029,13 @@ int main(int argc, char *argv[])
 #endif
 	if (num_cpus < 1)
 		num_cpus = 1;
+
+	if (argc == 2) {
+		if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))
+			show_usage_and_exit(0);
+		if (!strcmp(argv[1], "-V") || !strcmp(argv[1], "--version"))
+			show_version_and_exit();
+	}
 
 	// number of gpus
 	active_gpus = cuda_num_devices();

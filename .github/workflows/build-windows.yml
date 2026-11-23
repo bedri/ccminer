@@ -1,0 +1,161 @@
+name: Build Windows CUDA Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: 'Release version tag label for archive naming'
+        required: false
+        default: 'v2.3.1-krista-1.5.9.0'
+        type: string
+
+jobs:
+  build-win64-cuda:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install NVIDIA CUDA Toolkit 12.8.1
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.8.1'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration", "cuobjdump"]'
+
+      - name: Setup MSVC Developer Environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Locate vcpkg and install x64-windows dependencies
+        shell: pwsh
+        run: |
+          $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { $env:VCPKG_INSTALLATION_ROOT }
+          if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
+            throw "vcpkg not found (VCPKG_ROOT=$env:VCPKG_ROOT, VCPKG_INSTALLATION_ROOT=$env:VCPKG_INSTALLATION_ROOT)"
+          }
+          echo "VCPKG_DIR=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & "$vcpkgRoot\vcpkg.exe" install --triplet x64-windows `
+            "curl[openssl]" openssl jansson pthreads zlib
+
+      - name: Configure CMake (VS 2022 + vcpkg + CUDA)
+        shell: pwsh
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_DIR/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build ccminer (Release x64)
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Stage package, collect DLLs, and run smoke checks
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.package_version }}"
+          if (-not $ver) { $ver = "v2.3.1-krista-1.5.9.0" }
+          $pkgName = "ccminer-$ver-win64-cuda12.8"
+          $stageDir = Join-Path (Resolve-Path ".").Path "dist\$pkgName"
+          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+
+          $exePath = "build\Release\ccminer.exe"
+          if (-not (Test-Path $exePath)) {
+            throw "Missing built binary: $exePath"
+          }
+          $exeDest = Join-Path $stageDir "ccminer.exe"
+          Copy-Item $exePath -Destination $exeDest -Force
+
+          Get-ChildItem "build\Release\*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName -Destination (Join-Path $stageDir $_.Name) -Force
+          }
+
+          $vcpkgBin = "$env:VCPKG_DIR\installed\x64-windows\bin"
+          $queue = [System.Collections.Generic.Queue[string]]::new()
+          $visited = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+          $queue.Enqueue($exeDest)
+          $null = $visited.Add($exeDest)
+          Get-ChildItem (Join-Path $stageDir "*.dll") -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($visited.Add($_.FullName)) {
+              $queue.Enqueue($_.FullName)
+            }
+          }
+
+          while ($queue.Count -gt 0) {
+            $cur = $queue.Dequeue()
+            $depsOut = & dumpbin /dependents $cur 2>&1 | Out-String
+            Write-Host "=== dumpbin /dependents $(Split-Path -Leaf $cur) ==="
+            Write-Host $depsOut
+            foreach ($line in ($depsOut -split "`r?`n")) {
+              if ($line -match '^\s+([A-Za-z0-9._+-]+\.dll)\s*$') {
+                $dllName = $matches[1]
+                $destDll = Join-Path $stageDir $dllName
+                if (-not (Test-Path $destDll) -and (Test-Path $vcpkgBin)) {
+                  $cand = Join-Path $vcpkgBin $dllName
+                  if (Test-Path $cand) {
+                    Copy-Item $cand -Destination $destDll -Force
+                  }
+                }
+                if ((Test-Path $destDll) -and $visited.Add($destDll)) {
+                  $queue.Enqueue($destDll)
+                }
+              }
+            }
+          }
+
+          Copy-Item "README.txt", "LICENSE.txt" -Destination $stageDir
+
+          Write-Host "=== Staged Files ==="
+          Get-ChildItem $stageDir | Format-Table Name, Length -AutoSize
+
+          Write-Host "=== Smoke Test: ccminer.exe --help ==="
+          $helpOut = & $exeDest --help 2>&1 | Out-String
+          Write-Host $helpOut
+          if ($LASTEXITCODE -ne 0) {
+            throw "ccminer.exe --help exited with $LASTEXITCODE"
+          }
+          foreach ($flag in @("--coinbase-addr", "--no-auto-register", "--cputest")) {
+            if ($helpOut -notmatch [regex]::Escape($flag)) {
+              throw "Missing expected flag in --help output: $flag"
+            }
+          }
+
+          Write-Host "=== Smoke Test: ccminer.exe --version ==="
+          $verOut = & $exeDest --version 2>&1 | Out-String
+          Write-Host $verOut
+          if ($LASTEXITCODE -ne 0) {
+            throw "ccminer.exe --version exited with $LASTEXITCODE"
+          }
+          if ($verOut -notmatch "libcurl/") {
+            throw "Missing libcurl/ info in --version output"
+          }
+
+          Write-Host "=== CUDA ELF Targets ==="
+          $elfOut = & cuobjdump --list-elf $exeDest | Out-String
+          foreach ($sm in @("sm_75", "sm_80", "sm_86", "sm_89", "sm_90", "sm_120")) {
+            if ($elfOut -notmatch $sm) {
+              throw "Missing CUDA cubin architecture: $sm"
+            }
+          }
+          Write-Host (($elfOut -split "`r?`n" | Select-Object -First 20) -join "`n")
+
+          Write-Host "=== CUDA PTX Targets ==="
+          $ptxOut = & cuobjdump --list-ptx $exeDest | Out-String
+          if ($ptxOut -notmatch "sm_120|compute_120") {
+            throw "Missing CUDA PTX sm_120/compute_120"
+          }
+          Write-Host (($ptxOut -split "`r?`n" | Select-Object -First 10) -join "`n")
+
+          $zipPath = "dist\$pkgName.zip"
+          Compress-Archive -Path $stageDir -DestinationPath $zipPath -Force
+          Get-Item $zipPath | Select-Object Name, Length
+          "ZIP_PATH=$zipPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload Windows CUDA release zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccminer-win64-cuda12.8
+          path: ${{ env.ZIP_PATH }}
+          if-no-files-found: error

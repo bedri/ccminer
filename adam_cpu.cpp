@@ -517,11 +517,11 @@ extern "C" uint32_t run_cpu_classic_x11kvs_mine(int thr_id, const struct work *w
         memcpy(hdr, pdata, 76);
 
         #pragma omp for schedule(static)
-        for (uint32_t i = 0; i < throughput; i++) {
+        for (int64_t i = 0; i < (int64_t)throughput; i++) {
             if (best_nonce.load(std::memory_order_relaxed) != UINT32_MAX || work_restart[thr_id].restart)
                 continue;
 
-            uint32_t nonce = start_nonce + i;
+            uint32_t nonce = start_nonce + (uint32_t)i;
             le32enc(hdr + 76, nonce);
 
             uint32_t hash32[8];
@@ -553,13 +553,13 @@ extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const struct work *work, c
     const int w_factor = work->adam_factor > 0 ? work->adam_factor : 1;
 
     std::atomic<uint32_t> best_nonce(UINT32_MAX);
-    uint32_t scanned = 0;
+    int64_t scanned = 0;
     #pragma omp parallel for reduction(+:scanned)
-    for (uint32_t i = 0; i < throughput; i++) {
+    for (int64_t i = 0; i < (int64_t)throughput; i++) {
         if (best_nonce.load(std::memory_order_relaxed) != UINT32_MAX || work_restart[thr_id].restart) continue;
         scanned++;
 
-        uint32_t nonce = start_nonce + i;
+        uint32_t nonce = start_nonce + (uint32_t)i;
         uint8_t input[70];
         memcpy(input, input_template, 66);
         le32enc(input + 66, nonce);
@@ -588,5 +588,5 @@ extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const struct work *work, c
     uint32_t winner = best_nonce.load(std::memory_order_relaxed);
     if (winner != UINT32_MAX && (*found_nonce == UINT32_MAX || winner < *found_nonce))
         *found_nonce = winner;
-    return scanned;
+    return (uint32_t)scanned;
 }

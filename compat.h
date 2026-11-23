@@ -45,11 +45,16 @@ static __inline int setpriority(int which, int who, int prio)
 }
 
 #ifdef _MSC_VER
+#if _MSC_VER < 1900
 #define snprintf(...) _snprintf(__VA_ARGS__)
+#endif
 #define strdup(...) _strdup(__VA_ARGS__)
 #define strncasecmp(x,y,z) _strnicmp(x,y,z)
 #define strcasecmp(x,y) _stricmp(x,y)
-typedef int ssize_t;
+#ifndef _SSIZE_T_DEFINED
+#define _SSIZE_T_DEFINED
+typedef SSIZE_T ssize_t;
+#endif
 
 __inline int msver(void) {
 	switch (_MSC_VER) {
@@ -78,7 +83,9 @@ static __inline char * dirname(char *file) {
 #endif /* WIN32 */
 
 #ifdef _MSC_VER
+#if _MSC_VER < 1900
 # define __func__ __FUNCTION__
+#endif
 # define __thread __declspec(thread)
 # define _ALIGN(x) __declspec(align(x))
 #else
