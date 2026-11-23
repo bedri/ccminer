@@ -11,7 +11,7 @@ on:
 
 jobs:
   build-win64-cuda:
-    runs-on: windows-2025
+    runs-on: windows-2022
 
     steps:
       - name: Checkout repository
@@ -28,12 +28,14 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+          vsversion: '2022'
 
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
+      - name: Restore vcpkg binary cache
+        id: cache-vcpkg
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}\vcpkg-cache
-          key: vcpkg-win2025-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-win2022-${{ hashFiles('vcpkg.json') }}
 
       - name: Ensure Ninja and vcpkg toolchain are ready
         shell: pwsh
@@ -51,20 +53,34 @@ jobs:
             }
           }
           ninja --version
+          cl 2>&1 | Select-Object -First 2
+          nvcc --version
 
           $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { $env:VCPKG_INSTALLATION_ROOT }
           if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake")) {
             throw "vcpkg toolchain not found (VCPKG_ROOT=$env:VCPKG_ROOT, VCPKG_INSTALLATION_ROOT=$env:VCPKG_INSTALLATION_ROOT)"
           }
+          git -C $vcpkgRoot cat-file -e "0df93a05b9de080129e653ec4776d7e14a1b2e4f^{commit}" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            git -C $vcpkgRoot fetch --depth=1 origin 0df93a05b9de080129e653ec4776d7e14a1b2e4f
+          }
           "VCPKG_DIR=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Configure CMake (Ninja + vcpkg manifest + CUDA)
+        id: configure
         shell: pwsh
         run: |
           cmake -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_DIR/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Save vcpkg binary cache
+        if: steps.configure.outcome == 'success' && steps.cache-vcpkg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}\vcpkg-cache
+          key: vcpkg-win2022-${{ hashFiles('vcpkg.json') }}
 
       - name: Build ccminer (Release x64)
         shell: pwsh
