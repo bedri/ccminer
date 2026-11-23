@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
 project(ccminer LANGUAGES C CXX CUDA)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 14)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 find_package(CUDAToolkit REQUIRED)
@@ -217,7 +217,6 @@ target_compile_definitions(ccminer PRIVATE
 
 target_compile_options(ccminer PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:/openmp>
-  $<$<COMPILE_LANGUAGE:C,CXX>:/MP>
 )
 
 set_source_files_properties(compat/gettimeofday.c PROPERTIES

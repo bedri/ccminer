@@ -22,35 +22,46 @@ jobs:
         with:
           cuda: '12.8.1'
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "visual_studio_integration", "cuobjdump"]'
+          sub-packages: '["nvcc", "cudart", "cuobjdump"]'
 
       - name: Setup MSVC Developer Environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Locate vcpkg and install x64-windows dependencies
+      - name: Ensure Ninja and vcpkg toolchain are ready
         shell: pwsh
         run: |
-          $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { $env:VCPKG_INSTALLATION_ROOT }
-          if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
-            throw "vcpkg not found (VCPKG_ROOT=$env:VCPKG_ROOT, VCPKG_INSTALLATION_ROOT=$env:VCPKG_INSTALLATION_ROOT)"
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            $vsNinja = Join-Path $env:DevEnvDir "CommonExtensions\Microsoft\CMake\Ninja"
+            if (Test-Path (Join-Path $vsNinja "ninja.exe")) {
+              $vsNinja | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              $env:PATH = "$vsNinja;$env:PATH"
+            } else {
+              choco install ninja -y
+            }
           }
-          echo "VCPKG_DIR=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          & "$vcpkgRoot\vcpkg.exe" install --triplet x64-windows `
-            "curl[openssl]" openssl jansson pthreads zlib
+          ninja --version
 
-      - name: Configure CMake (VS 2022 + vcpkg + CUDA)
+          $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { $env:VCPKG_INSTALLATION_ROOT }
+          if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake")) {
+            throw "vcpkg toolchain not found (VCPKG_ROOT=$env:VCPKG_ROOT, VCPKG_INSTALLATION_ROOT=$env:VCPKG_INSTALLATION_ROOT)"
+          }
+          "VCPKG_DIR=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure CMake (Ninja + vcpkg manifest + CUDA)
         shell: pwsh
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+          cmake -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_DIR/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"
 
       - name: Build ccminer (Release x64)
         shell: pwsh
         run: |
-          cmake --build build --config Release --parallel
+          cmake --build build --parallel
 
       - name: Stage package, collect DLLs, and run smoke checks
         shell: pwsh
@@ -61,18 +72,18 @@ jobs:
           $stageDir = Join-Path (Resolve-Path ".").Path "dist\$pkgName"
           New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
-          $exePath = "build\Release\ccminer.exe"
+          $exePath = "build\ccminer.exe"
           if (-not (Test-Path $exePath)) {
             throw "Missing built binary: $exePath"
           }
           $exeDest = Join-Path $stageDir "ccminer.exe"
           Copy-Item $exePath -Destination $exeDest -Force
 
-          Get-ChildItem "build\Release\*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+          Get-ChildItem "build\*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
             Copy-Item $_.FullName -Destination (Join-Path $stageDir $_.Name) -Force
           }
 
-          $vcpkgBin = "$env:VCPKG_DIR\installed\x64-windows\bin"
+          $vcpkgBin = "build\vcpkg_installed\x64-windows\bin"
           $queue = [System.Collections.Generic.Queue[string]]::new()
           $visited = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
           $queue.Enqueue($exeDest)

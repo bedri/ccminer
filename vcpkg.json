@@ -1,0 +1,14 @@
+{
+  "name": "ccminer-krista",
+  "version-string": "2.3.1",
+  "dependencies": [
+    {
+      "name": "curl",
+      "features": ["openssl"]
+    },
+    "openssl",
+    "jansson",
+    "pthreads",
+    "zlib"
+  ]
+}
