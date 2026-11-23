@@ -1,6 +1,7 @@
 {
   "name": "ccminer-krista",
   "version-string": "2.3.1",
+  "builtin-baseline": "7d2bab768f86e068ce3f63c53afb420d384caf4f",
   "dependencies": [
     {
       "name": "curl",
