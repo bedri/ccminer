@@ -15,6 +15,7 @@
 
 #ifdef _MSC_VER
 #include <emmintrin.h>
+#include <intrin.h>
 #include <openssl/opensslv.h>
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 #include "compat/bignum_ssl10.hpp"

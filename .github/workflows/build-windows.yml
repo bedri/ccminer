@@ -82,7 +82,7 @@ jobs:
       - name: Build ccminer (Release x64)
         shell: pwsh
         run: |
-          cmake --build build --parallel
+          cmake --build build --parallel -- -k 0
 
       - name: Stage package, collect DLLs, and run smoke checks
         shell: pwsh

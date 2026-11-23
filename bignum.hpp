@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "uint256.h"
+
 #include <openssl/bn.h>
 
 #include "serialize.hpp"
