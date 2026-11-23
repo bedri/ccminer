@@ -11,7 +11,9 @@ on:
 
 jobs:
   build-win64-cuda:
-    runs-on: windows-latest
+    runs-on: windows-2025
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}\vcpkg-cache
 
     steps:
       - name: Checkout repository
@@ -29,9 +31,16 @@ jobs:
         with:
           arch: x64
 
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\vcpkg-cache
+          key: vcpkg-win2025-${{ hashFiles('vcpkg.json') }}
+
       - name: Ensure Ninja and vcpkg toolchain are ready
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
             $vsNinja = Join-Path $env:DevEnvDir "CommonExtensions\Microsoft\CMake\Ninja"
             if (Test-Path (Join-Path $vsNinja "ninja.exe")) {
@@ -55,8 +64,7 @@ jobs:
           cmake -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_DIR/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DCMAKE_CUDA_FLAGS="-allow-unsupported-compiler"
+            -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build ccminer (Release x64)
         shell: pwsh
