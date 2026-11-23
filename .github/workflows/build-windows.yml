@@ -54,15 +54,12 @@ jobs:
           }
           ninja --version
           cl 2>&1 | Select-Object -First 2
+          $global:LASTEXITCODE = 0
           nvcc --version
 
           $vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { $env:VCPKG_INSTALLATION_ROOT }
           if (-not $vcpkgRoot -or -not (Test-Path "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake")) {
             throw "vcpkg toolchain not found (VCPKG_ROOT=$env:VCPKG_ROOT, VCPKG_INSTALLATION_ROOT=$env:VCPKG_INSTALLATION_ROOT)"
-          }
-          git -C $vcpkgRoot cat-file -e "0df93a05b9de080129e653ec4776d7e14a1b2e4f^{commit}" 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            git -C $vcpkgRoot fetch --depth=1 origin 0df93a05b9de080129e653ec4776d7e14a1b2e4f
           }
           "VCPKG_DIR=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
