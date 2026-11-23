@@ -422,11 +422,13 @@ static int sockopt_keepalive_cb(void *userdata, curl_socket_t fd,
 /* For getwork (longpoll or wallet) - not stratum pools!
  * DO NOT USE DIRECTLY
  */
-static json_t *json_rpc_call(CURL *curl, const char *url,
+static json_t *json_rpc_call_ex(CURL *curl, const char *url,
 		      const char *userpass, const char *rpc_req,
-		      bool longpoll_scan, bool longpoll, bool keepalive, int *curl_err)
+		      bool longpoll_scan, bool longpoll, bool keepalive, int *curl_err,
+		      bool allow_null_result, int timeout_override,
+		      char *err_msg_out, size_t err_msg_sz)
 {
-	json_t *val, *err_val, *res_val;
+	json_t *val = NULL, *err_val, *res_val;
 	int rc;
 	struct data_buffer all_data = { 0 };
 	struct upload_buffer upload_data;
@@ -435,9 +437,12 @@ static json_t *json_rpc_call(CURL *curl, const char *url,
 	char *httpdata;
 	char len_hdr[64], hashrate_hdr[64];
 	char curl_err_str[CURL_ERROR_SIZE] = { 0 };
-	long timeout = longpoll ? opt_timeout : opt_timeout/2;
+	long timeout = (timeout_override > 0) ? (long)timeout_override : (longpoll ? opt_timeout : opt_timeout/2);
 	struct header_info hi = { 0 };
 	bool lp_scanning = longpoll_scan && !have_longpoll;
+
+	if (err_msg_out && err_msg_sz > 0)
+		err_msg_out[0] = '\0';
 
 	/* it is assumed that 'curl' is freshly [re]initialized at this pt */
 
@@ -556,32 +561,35 @@ static json_t *json_rpc_call(CURL *curl, const char *url,
 		free(s);
 	}
 
-	/* JSON-RPC valid response returns a non-null 'result',
+	/* JSON-RPC valid response returns a non-null 'result' (or null if allow_null_result),
 	 * and a null 'error'. */
 	res_val = json_object_get(val, "result");
 	err_val = json_object_get(val, "error");
 
-	if (!res_val || json_is_null(res_val) ||
+	if (!res_val || (!allow_null_result && json_is_null(res_val)) ||
 	    (err_val && !json_is_null(err_val))) {
 		char *s = NULL;
 
-		if (err_val) {
+		if (err_val && !json_is_null(err_val)) {
 			s = json_dumps(err_val, 0);
 			json_t *msg = json_object_get(err_val, "message");
 			json_t *err_code = json_object_get(err_val, "code");
-			if (curl_err && json_integer_value(err_code))
+			if (curl_err && err_code && json_integer_value(err_code))
 				*curl_err = (int) json_integer_value(err_code);
 
-			if (json_is_string(msg)) {
+			if (msg && json_is_string(msg)) {
 				free(s);
 				s = strdup(json_string_value(msg));
+				if (err_msg_out && err_msg_sz > 0)
+					snprintf(err_msg_out, err_msg_sz, "%s", s);
 				if (have_longpoll && s && !strcmp(s, "method not getwork")) {
-					json_decref(err_val);
 					free(s);
+					json_decref(val);
 					goto err_out;
 				}
+			} else if (err_msg_out && err_msg_sz > 0 && s) {
+				snprintf(err_msg_out, err_msg_sz, "%s", s);
 			}
-			json_decref(err_val);
 		}
 		else
 			s = strdup("(unknown reason)");
@@ -595,7 +603,7 @@ static json_t *json_rpc_call(CURL *curl, const char *url,
 		}
 
 		free(s);
-
+		json_decref(val);
 		goto err_out;
 	}
 
@@ -617,16 +625,42 @@ err_out:
 	return NULL;
 }
 
+static json_t *json_rpc_call(CURL *curl, const char *url,
+		      const char *userpass, const char *rpc_req,
+		      bool longpoll_scan, bool longpoll, bool keepalive, int *curl_err)
+{
+	return json_rpc_call_ex(curl, url, userpass, rpc_req, longpoll_scan, longpoll, keepalive, curl_err, false, 0, NULL, 0);
+}
+
 /* getwork calls with pool pointer (wallet/longpoll pools) */
-json_t *json_rpc_call_pool(CURL *curl, struct pool_infos *pool, const char *req,
-	bool longpoll_scan, bool longpoll, int *curl_err)
+json_t *json_rpc_call_pool_ex(CURL *curl, struct pool_infos *pool, const char *req,
+	bool longpoll_scan, bool longpoll, int *curl_err,
+	bool allow_null_result, int timeout_override)
 {
 	char userpass[768];
-	// todo, malloc and store that in pool array
 	snprintf(userpass, sizeof(userpass), "%s%c%s", pool->user,
 		strlen(pool->pass)?':':'\0', pool->pass);
 
-	return json_rpc_call(curl, pool->url, userpass, req, longpoll_scan, false, false, curl_err);
+	return json_rpc_call_ex(curl, pool->url, userpass, req, longpoll_scan, false, false, curl_err,
+		allow_null_result, timeout_override, NULL, 0);
+}
+
+json_t *json_rpc_call_pool_msg(CURL *curl, struct pool_infos *pool, const char *req,
+	int *curl_err, bool allow_null_result, int timeout_override,
+	char *err_msg_out, size_t err_msg_sz)
+{
+	char userpass[768];
+	snprintf(userpass, sizeof(userpass), "%s%c%s", pool->user,
+		strlen(pool->pass)?':':'\0', pool->pass);
+
+	return json_rpc_call_ex(curl, pool->url, userpass, req, false, false, false, curl_err,
+		allow_null_result, timeout_override, err_msg_out, err_msg_sz);
+}
+
+json_t *json_rpc_call_pool(CURL *curl, struct pool_infos *pool, const char *req,
+	bool longpoll_scan, bool longpoll, int *curl_err)
+{
+	return json_rpc_call_pool_ex(curl, pool, req, longpoll_scan, longpoll, curl_err, false, 0);
 }
 
 /* called only from longpoll thread, we have the lp_url */

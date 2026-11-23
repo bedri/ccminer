@@ -9,7 +9,9 @@ endif
 
 EXTRA_DIST		= autogen.sh README.md README.txt LICENSE.txt \
 			  ccminer.sln ccminer.vcxproj ccminer.vcxproj.filters \
-			  compat/gettimeofday.c compat/getopt/getopt_long.c
+			  compat/gettimeofday.c compat/getopt/getopt_long.c \
+			  adam/cuda_adam_common.cuh adam/cuda_adam_g1.cuh \
+			  adam/cuda_adam_g2.cuh adam/cuda_adam_g3.cuh adam/cuda_adam_g4.cuh
 
 SUBDIRS = compat
 
@@ -177,4 +179,7 @@ scrypt/titan_kernel.o: scrypt/titan_kernel.cu
 
 skein.o: skein.cu
 	$(NVCC) $(nvcc_FLAGS) --maxrregcount=64 -o $@ -c $<
+
+cuda_adam.o: cuda_adam.cu adam/cuda_adam_common.cuh adam/cuda_adam_g1.cuh adam/cuda_adam_g2.cuh adam/cuda_adam_g3.cuh adam/cuda_adam_g4.cuh
+	$(NVCC) $(nvcc_FLAGS) --maxrregcount=128 -o $@ -c $<
 

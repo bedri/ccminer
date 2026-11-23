@@ -764,6 +764,8 @@ struct work {
 	int adam_algo2;
 	int adam_algo3;
 	int adam_factor;
+	bool adam_is_classic;
+	uint64_t adam_classic_id;
 
 	/* pok getwork txs */
 	uint32_t tx_count;
@@ -837,6 +839,16 @@ void pool_dump_infos(void);
 
 json_t * json_rpc_call_pool(CURL *curl, struct pool_infos*,
 	const char *req, bool lp_scan, bool lp, int *err);
+json_t * json_rpc_call_pool_ex(CURL *curl, struct pool_infos*,
+	const char *req, bool lp_scan, bool lp, int *err,
+	bool allow_null_result, int timeout_override);
+json_t * json_rpc_call_pool_msg(CURL *curl, struct pool_infos*,
+	const char *req, int *err, bool allow_null_result, int timeout_override,
+	char *err_msg_out, size_t err_msg_sz);
+bool cuda_adam_selftest(int thr_id);
+void cpu_hash_x11kvs_80(const uint8_t *header80, void *out32);
+size_t krista_address_to_script(unsigned char *out, size_t outsz, const char *addr);
+uint32_t run_cpu_classic_x11kvs_mine(int thr_id, const struct work *work, const uint32_t *pdata, uint32_t start_nonce, uint32_t throughput, const uint32_t *target, uint32_t *found_nonce);
 json_t * json_rpc_longpoll(CURL *curl, char *lp_url, struct pool_infos*,
 	const char *req, int *err);
 

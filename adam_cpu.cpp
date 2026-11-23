@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <algorithm>
+#include <atomic>
+#include <omp.h>
 #include <openssl/sha.h>
 
 #include "miner.h"
@@ -117,47 +119,150 @@ static void HashX11KV(const void* pbegin, size_t len, void* pBuffer) {
     memcpy(pBuffer, hash, 32);
 }
 
+static const uint32_t HASHX11KVS_MAX_LEVEL = 7;
+static const uint32_t HASHX11KVS_MIN_LEVEL = 1;
+static const uint32_t HASHX11KVS_MAX_DRIFT = 0xFFFF;
+static const uint32_t HASHX11KVS_CACHE_CHUNK = 33;
+static const uint32_t HASHX11KVS_CACHE_POS_1 = 0xFFFF;
+static const uint32_t HASHX11KVS_CACHE_POS_2 = 0xFFFF * 2;
+static const uint32_t HASHX11KVS_CACHE_POS_3 = 0xFFFF * 3;
+static const uint32_t HASHX11KVS_CACHE_POS_4 = 0xFFFF * 4;
+static const uint32_t HASHX11KVS_CACHE_POS_5 = 0xFFFF * 5;
+static const uint32_t HASHX11KVS_CACHE_POS_6 = 0xFFFF * 6;
+static const uint32_t HASHX11KVS_CACHE_OFF_1 = 0xFFFF * 33;
+static const uint32_t HASHX11KVS_CACHE_OFF_2 = HASHX11KVS_CACHE_OFF_1 + 0xFFFF * 33 * 2;
+static const uint32_t HASHX11KVS_CACHE_OFF_3 = HASHX11KVS_CACHE_OFF_2 + 0xFFFF * 33 * 3;
+static const uint32_t HASHX11KVS_CACHE_OFF_4 = HASHX11KVS_CACHE_OFF_3 + 0xFFFF * 33 * 4;
+static const uint32_t HASHX11KVS_CACHE_OFF_5 = HASHX11KVS_CACHE_OFF_4 + 0xFFFF * 33 * 5;
+static const uint32_t HASHX11KVS_CACHE_TOTAL = HASHX11KVS_CACHE_OFF_5 + 0xFFFF * 33 * 6;
+
+static void HashX11KVS_recursive(const uint8_t* pbegin, size_t len, void* pBuffer, unsigned int level, uint32_t nonce, uint8_t* cache) {
+    if (len < 80) {
+        HashX11KV(pbegin, len, pBuffer);
+        return;
+    }
+
+    if (cache) {
+        if (level == HASHX11KVS_MAX_LEVEL - 1 && cache[(nonce % HASHX11KVS_CACHE_POS_1) * HASHX11KVS_CACHE_CHUNK] == 0xFF) {
+            memcpy(pBuffer, cache + ((nonce % HASHX11KVS_CACHE_POS_1) * HASHX11KVS_CACHE_CHUNK) + 1, 32);
+            return;
+        }
+        if (level == HASHX11KVS_MAX_LEVEL - 2 && cache[HASHX11KVS_CACHE_OFF_1 + (nonce % HASHX11KVS_CACHE_POS_2) * HASHX11KVS_CACHE_CHUNK] == 0xFF) {
+            memcpy(pBuffer, cache + HASHX11KVS_CACHE_OFF_1 + ((nonce % HASHX11KVS_CACHE_POS_2) * HASHX11KVS_CACHE_CHUNK) + 1, 32);
+            return;
+        }
+        if (level == HASHX11KVS_MAX_LEVEL - 3 && cache[HASHX11KVS_CACHE_OFF_2 + (nonce % HASHX11KVS_CACHE_POS_3) * HASHX11KVS_CACHE_CHUNK] == 0xFF) {
+            memcpy(pBuffer, cache + HASHX11KVS_CACHE_OFF_2 + ((nonce % HASHX11KVS_CACHE_POS_3) * HASHX11KVS_CACHE_CHUNK) + 1, 32);
+            return;
+        }
+        if (level == HASHX11KVS_MAX_LEVEL - 4 && cache[HASHX11KVS_CACHE_OFF_3 + (nonce % HASHX11KVS_CACHE_POS_4) * HASHX11KVS_CACHE_CHUNK] == 0xFF) {
+            memcpy(pBuffer, cache + HASHX11KVS_CACHE_OFF_3 + ((nonce % HASHX11KVS_CACHE_POS_4) * HASHX11KVS_CACHE_CHUNK) + 1, 32);
+            return;
+        }
+        if (level == HASHX11KVS_MAX_LEVEL - 5 && cache[HASHX11KVS_CACHE_OFF_4 + (nonce % HASHX11KVS_CACHE_POS_5) * HASHX11KVS_CACHE_CHUNK] == 0xFF) {
+            memcpy(pBuffer, cache + HASHX11KVS_CACHE_OFF_4 + ((nonce % HASHX11KVS_CACHE_POS_5) * HASHX11KVS_CACHE_CHUNK) + 1, 32);
+            return;
+        }
+        if (level == HASHX11KVS_MAX_LEVEL - 6 && cache[HASHX11KVS_CACHE_OFF_5 + (nonce % HASHX11KVS_CACHE_POS_6) * HASHX11KVS_CACHE_CHUNK] == 0xFF) {
+            memcpy(pBuffer, cache + HASHX11KVS_CACHE_OFF_5 + ((nonce % HASHX11KVS_CACHE_POS_6) * HASHX11KVS_CACHE_CHUNK) + 1, 32);
+            return;
+        }
+    }
+
+    uint8_t hash[32];
+    HashX11KV(pbegin, len, hash);
+    if (level == HASHX11KVS_MIN_LEVEL) {
+        memcpy(pBuffer, hash, 32);
+        if (cache) {
+            cache[HASHX11KVS_CACHE_OFF_5 + (nonce % HASHX11KVS_CACHE_POS_6) * HASHX11KVS_CACHE_CHUNK] = 0xFF;
+            memcpy(cache + HASHX11KVS_CACHE_OFF_5 + ((nonce % HASHX11KVS_CACHE_POS_6) * HASHX11KVS_CACHE_CHUNK) + 1, pBuffer, 32);
+        }
+        return;
+    }
+
+    if (cache && level == HASHX11KVS_MAX_LEVEL && nonce > 0) {
+        cache[((nonce - 1) % HASHX11KVS_CACHE_POS_1) * HASHX11KVS_CACHE_CHUNK] = 0x00;
+        cache[HASHX11KVS_CACHE_OFF_1 + ((nonce - 1) % HASHX11KVS_CACHE_POS_2) * HASHX11KVS_CACHE_CHUNK] = 0x00;
+        cache[HASHX11KVS_CACHE_OFF_2 + ((nonce - 1) % HASHX11KVS_CACHE_POS_3) * HASHX11KVS_CACHE_CHUNK] = 0x00;
+        cache[HASHX11KVS_CACHE_OFF_3 + ((nonce - 1) % HASHX11KVS_CACHE_POS_4) * HASHX11KVS_CACHE_CHUNK] = 0x00;
+        cache[HASHX11KVS_CACHE_OFF_4 + ((nonce - 1) % HASHX11KVS_CACHE_POS_5) * HASHX11KVS_CACHE_CHUNK] = 0x00;
+        cache[HASHX11KVS_CACHE_OFF_5 + ((nonce - 1) % HASHX11KVS_CACHE_POS_6) * HASHX11KVS_CACHE_CHUNK] = 0x00;
+    }
+
+    uint8_t nextheader1[80];
+    uint8_t nextheader2[80];
+
+    uint32_t nextnonce1 = nonce + (le32dec(hash + 24) % HASHX11KVS_MAX_DRIFT);
+    uint32_t nextnonce2 = nonce + (le32dec(hash + 28) % HASHX11KVS_MAX_DRIFT);
+
+    memcpy(nextheader1, pbegin, 76);
+    le32enc(nextheader1 + 76, nextnonce1);
+
+    memcpy(nextheader2, pbegin, 76);
+    le32enc(nextheader2 + 76, nextnonce2);
+
+    uint8_t concat[96];
+    memcpy(concat, hash, 32);
+    HashX11KVS_recursive(nextheader1, 80, concat + 32, level - 1, nextnonce1, cache);
+    HashX11KVS_recursive(nextheader2, 80, concat + 64, level - 1, nextnonce2, cache);
+
+    uint8_t sha_inner[32];
+    SHA256(concat, 96, sha_inner);
+    SHA256(sha_inner, 32, (uint8_t*)pBuffer);
+
+    if (cache && level == HASHX11KVS_MAX_LEVEL - 1) {
+        cache[(nonce % HASHX11KVS_CACHE_POS_1) * HASHX11KVS_CACHE_CHUNK] = 0xFF;
+        memcpy(cache + ((nonce % HASHX11KVS_CACHE_POS_1) * HASHX11KVS_CACHE_CHUNK) + 1, pBuffer, 32);
+        return;
+    }
+    if (cache && level == HASHX11KVS_MAX_LEVEL - 2) {
+        cache[HASHX11KVS_CACHE_OFF_1 + (nonce % HASHX11KVS_CACHE_POS_2) * HASHX11KVS_CACHE_CHUNK] = 0xFF;
+        memcpy(cache + HASHX11KVS_CACHE_OFF_1 + ((nonce % HASHX11KVS_CACHE_POS_2) * HASHX11KVS_CACHE_CHUNK) + 1, pBuffer, 32);
+        return;
+    }
+    if (cache && level == HASHX11KVS_MAX_LEVEL - 3) {
+        cache[HASHX11KVS_CACHE_OFF_2 + (nonce % HASHX11KVS_CACHE_POS_3) * HASHX11KVS_CACHE_CHUNK] = 0xFF;
+        memcpy(cache + HASHX11KVS_CACHE_OFF_2 + ((nonce % HASHX11KVS_CACHE_POS_3) * HASHX11KVS_CACHE_CHUNK) + 1, pBuffer, 32);
+        return;
+    }
+    if (cache && level == HASHX11KVS_MAX_LEVEL - 4) {
+        cache[HASHX11KVS_CACHE_OFF_3 + (nonce % HASHX11KVS_CACHE_POS_4) * HASHX11KVS_CACHE_CHUNK] = 0xFF;
+        memcpy(cache + HASHX11KVS_CACHE_OFF_3 + ((nonce % HASHX11KVS_CACHE_POS_4) * HASHX11KVS_CACHE_CHUNK) + 1, pBuffer, 32);
+        return;
+    }
+    if (cache && level == HASHX11KVS_MAX_LEVEL - 5) {
+        cache[HASHX11KVS_CACHE_OFF_4 + (nonce % HASHX11KVS_CACHE_POS_5) * HASHX11KVS_CACHE_CHUNK] = 0xFF;
+        memcpy(cache + HASHX11KVS_CACHE_OFF_4 + ((nonce % HASHX11KVS_CACHE_POS_5) * HASHX11KVS_CACHE_CHUNK) + 1, pBuffer, 32);
+        return;
+    }
+}
+
 static void HashX11KVS(const uint8_t* pbegin, size_t len, void* pBuffer, unsigned int level = 7) {
     if (len < 80) {
         HashX11KV(pbegin, len, pBuffer);
         return;
     }
-    
-    uint8_t hash[32];
-    HashX11KV(pbegin, len, hash);
-    if (level == 1) {
-        memcpy(pBuffer, hash, 32);
-        return;
-    }
-    
+    static thread_local uint8_t* tls_kvs_cache = nullptr;
+    static thread_local uint8_t tls_kvs_hdr[76] = {0};
+    static thread_local bool tls_kvs_valid = false;
+    static thread_local uint32_t tls_kvs_last_nonce = 0;
     uint32_t nonce = le32dec(pbegin + 76);
-    
-    uint8_t nextheader1[80];
-    uint8_t nextheader2[80];
-    
-    uint32_t nextnonce1 = nonce + (le32dec(hash + 24) % 0xFFFF);
-    uint32_t nextnonce2 = nonce + (le32dec(hash + 28) % 0xFFFF);
-    
-    memcpy(nextheader1, pbegin, 76);
-    le32enc(nextheader1 + 76, nextnonce1);
-    
-    memcpy(nextheader2, pbegin, 76);
-    le32enc(nextheader2 + 76, nextnonce2);
-    
-    uint8_t hash1[32];
-    uint8_t hash2[32];
-    
-    HashX11KVS(nextheader1, 80, hash1, level - 1);
-    HashX11KVS(nextheader2, 80, hash2, level - 1);
-    
-    uint8_t concat[96];
-    memcpy(concat, hash, 32);
-    memcpy(concat + 32, hash1, 32);
-    memcpy(concat + 64, hash2, 32);
-    
-    uint8_t sha_inner[32];
-    SHA256(concat, 96, sha_inner);
-    SHA256(sha_inner, 32, (uint8_t*)pBuffer);
+    if (!tls_kvs_cache) {
+        tls_kvs_cache = (uint8_t*)calloc(1, HASHX11KVS_CACHE_TOTAL);
+        tls_kvs_valid = false;
+    }
+    if (!tls_kvs_valid || memcmp(tls_kvs_hdr, pbegin, 76) != 0 || nonce != tls_kvs_last_nonce + 1) {
+        if (tls_kvs_cache)
+            memset(tls_kvs_cache, 0x00, HASHX11KVS_CACHE_TOTAL);
+        memcpy(tls_kvs_hdr, pbegin, 76);
+        tls_kvs_valid = true;
+    }
+    HashX11KVS_recursive(pbegin, len, pBuffer, level, nonce, tls_kvs_cache);
+    tls_kvs_last_nonce = nonce;
+}
+
+extern "C" void cpu_hash_x11kvs_80(const uint8_t *header80, void *out32) {
+    HashX11KVS(header80, 80, out32, 7);
 }
 
 extern "C" void cpu_adam_puzzle_hash(int algoIndex, const uint8_t* pbegin, size_t len, void* pBuffer) {
@@ -301,9 +406,8 @@ extern "C" void cpu_adam_puzzle_hash(int algoIndex, const uint8_t* pbegin, size_
             break;
         }
         default: {
-            uint8_t sha_inner[32];
-            SHA256(pbegin, len, sha_inner);
-            SHA256(sha_inner, 32, (uint8_t*)pBuffer);
+            applog(LOG_ERR, "ADAM CPU unknown algo index %d", algoIndex);
+            memset(pBuffer, 0, 32);
             break;
         }
     }
@@ -318,7 +422,129 @@ static void cpu_scale_hash(uint32_t *hash, int i_factor) {
     }
 }
 
+extern "C" size_t krista_address_to_script(unsigned char *out, size_t outsz, const char *addr) {
+    static const char *pszBase58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if (!out || !addr || !addr[0])
+        return 0;
+
+    size_t addr_len = strlen(addr);
+    if (addr_len < 26 || addr_len > 64)
+        return 0;
+
+    unsigned char b256[50] = {0};
+    size_t b256_len = 0;
+    size_t leading_ones = 0;
+    const char *p = addr;
+    while (*p == '1') {
+        leading_ones++;
+        p++;
+    }
+
+    for (; *p; p++) {
+        const char *ch = strchr(pszBase58, *p);
+        if (!ch)
+            return 0;
+        int carry = (int)(ch - pszBase58);
+        for (size_t i = 0; i < sizeof(b256); i++) {
+            size_t idx = sizeof(b256) - 1 - i;
+            int val = carry + 58 * (int)b256[idx];
+            b256[idx] = (unsigned char)(val & 0xFF);
+            carry = val >> 8;
+        }
+        if (carry != 0)
+            return 0;
+    }
+
+    size_t first_nz = 0;
+    while (first_nz < sizeof(b256) && b256[first_nz] == 0)
+        first_nz++;
+
+    b256_len = leading_ones + (sizeof(b256) - first_nz);
+    if (b256_len != 25 && b256_len != 26)
+        return 0;
+
+    unsigned char bin[32] = {0};
+    size_t nz_count = sizeof(b256) - first_nz;
+    memcpy(bin + leading_ones, b256 + first_nz, nz_count);
+
+    unsigned char h1[32], h2[32];
+    SHA256(bin, b256_len - 4, h1);
+    SHA256(h1, 32, h2);
+    if (memcmp(h2, bin + b256_len - 4, 4) != 0)
+        return 0;
+
+    if (b256_len == 26) {
+        bool is_main_p2pkh = (bin[0] == 10 && bin[1] == 100);
+        bool is_test_p2pkh = (bin[0] == 24 && bin[1] == 181);
+        if (!is_main_p2pkh && !is_test_p2pkh)
+            return 0;
+        if (outsz < 25)
+            return 0;
+        out[0] = 0x76; /* OP_DUP */
+        out[1] = 0xa9; /* OP_HASH160 */
+        out[2] = 0x14; /* push 20 */
+        memcpy(out + 3, bin + 2, 20);
+        out[23] = 0x88; /* OP_EQUALVERIFY */
+        out[24] = 0xac; /* OP_CHECKSIG */
+        return 25;
+    }
+
+    /* b256_len == 25: KRISTA P2SH ([16] main, [19] test/regtest) */
+    if (bin[0] != 16 && bin[0] != 19)
+        return 0;
+    if (outsz < 23)
+        return 0;
+    out[0] = 0xa9; /* OP_HASH160 */
+    out[1] = 0x14; /* push 20 */
+    memcpy(out + 2, bin + 1, 20);
+    out[22] = 0x87; /* OP_EQUAL */
+    return 23;
+}
+
+extern "C" uint32_t run_cpu_classic_x11kvs_mine(int thr_id, const struct work *work, const uint32_t *pdata, uint32_t start_nonce, uint32_t throughput, const uint32_t *target, uint32_t *found_nonce) {
+    (void)work;
+    if (!found_nonce || !pdata || !target)
+        return 0;
+
+    std::atomic<uint32_t> best_nonce(UINT32_MAX);
+    std::atomic<uint32_t> scanned(0);
+    int max_t = std::min<int>(16, omp_get_max_threads());
+    if (max_t < 1) max_t = 1;
+
+    #pragma omp parallel num_threads(max_t)
+    {
+        uint8_t hdr[80];
+        memcpy(hdr, pdata, 76);
+
+        #pragma omp for schedule(static)
+        for (uint32_t i = 0; i < throughput; i++) {
+            if (best_nonce.load(std::memory_order_relaxed) != UINT32_MAX || work_restart[thr_id].restart)
+                continue;
+
+            uint32_t nonce = start_nonce + i;
+            le32enc(hdr + 76, nonce);
+
+            uint32_t hash32[8];
+            cpu_hash_x11kvs_80(hdr, hash32);
+            scanned.fetch_add(1, std::memory_order_relaxed);
+
+            if (fulltest(hash32, target)) {
+                uint32_t cur = best_nonce.load(std::memory_order_relaxed);
+                while (nonce < cur && !best_nonce.compare_exchange_weak(cur, nonce, std::memory_order_relaxed)) {}
+            }
+        }
+    }
+
+    uint32_t winner = best_nonce.load(std::memory_order_relaxed);
+    if (winner != UINT32_MAX && (*found_nonce == UINT32_MAX || winner < *found_nonce))
+        *found_nonce = winner;
+    return scanned.load(std::memory_order_relaxed);
+}
+
 extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const struct work *work, const uint8_t *input_template, uint32_t start_nonce, uint32_t throughput, const uint32_t *target, uint32_t *found_nonce) {
+    if (!found_nonce)
+        return 0;
+
     const int w_version = work->adam_version ? work->adam_version : 11;
     const int w_algo_single = work->adam_algo_single;
     const int w_algo1 = work->adam_algo1;
@@ -326,10 +552,11 @@ extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const struct work *work, c
     const int w_algo3 = work->adam_algo3;
     const int w_factor = work->adam_factor > 0 ? work->adam_factor : 1;
 
+    std::atomic<uint32_t> best_nonce(UINT32_MAX);
     uint32_t scanned = 0;
     #pragma omp parallel for reduction(+:scanned)
     for (uint32_t i = 0; i < throughput; i++) {
-        if (*found_nonce != UINT32_MAX || work_restart[thr_id].restart) continue;
+        if (best_nonce.load(std::memory_order_relaxed) != UINT32_MAX || work_restart[thr_id].restart) continue;
         scanned++;
 
         uint32_t nonce = start_nonce + i;
@@ -342,7 +569,7 @@ extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const struct work *work, c
             uint32_t hash3[8];
             cpu_adam_puzzle_hash(w_algo3, input, 70, hash3);
             cpu_scale_hash(hash3, w_factor);
-            
+
             uint32_t hash2[8];
             cpu_adam_puzzle_hash(w_algo2, (uint8_t*)hash3, 32, hash2);
             cpu_scale_hash(hash2, w_factor);
@@ -353,13 +580,13 @@ extern "C" uint32_t run_cpu_fallback_mine(int thr_id, const struct work *work, c
         }
 
         if (fulltest(puzzleHash, target)) {
-            #pragma omp critical
-            {
-                if (*found_nonce == UINT32_MAX || nonce < *found_nonce) {
-                    *found_nonce = nonce;
-                }
-            }
+            uint32_t cur = best_nonce.load(std::memory_order_relaxed);
+            while (nonce < cur && !best_nonce.compare_exchange_weak(cur, nonce, std::memory_order_relaxed)) {}
         }
     }
+
+    uint32_t winner = best_nonce.load(std::memory_order_relaxed);
+    if (winner != UINT32_MAX && (*found_nonce == UINT32_MAX || winner < *found_nonce))
+        *found_nonce = winner;
     return scanned;
 }
